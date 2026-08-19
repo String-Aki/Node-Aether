@@ -1,0 +1,23 @@
+# ESP-IDF Build artifacts
+build/
+managed_components/
+dependencies.lock
+*.bin
+*.elf
+*.map
+
+# Editor/OS temporary files
+.vscode/
+.DS_Store
+*.swp
+*~
+
+# Logs and Backups
+*.log
+*.bak
+Backup/
+
+# CRITICAL: Security and Configuration files
+sdkconfig
+sdkconfig.old
+sdkconfig.credentials
