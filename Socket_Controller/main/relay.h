@@ -4,8 +4,8 @@
 #include "driver/gpio.h"
 
 // Define your pins (Change these to match your actual wiring!)
-#define RELAY_1_PIN GPIO_NUM_4  // Laptop Charger
-#define RELAY_2_PIN GPIO_NUM_5  // Router Phone Charger
+#define RELAY_1_PIN GPIO_NUM_5  // Laptop Charger
+#define RELAY_2_PIN GPIO_NUM_4  // Router Phone Charger
 
 void relay_init(void);
 
