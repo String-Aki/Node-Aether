@@ -10,20 +10,19 @@ static bool r2_state = false;
 void relay_init(void) {
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << RELAY_1_PIN) | (1ULL << RELAY_2_PIN),
-        .mode = GPIO_MODE_OUTPUT,
+        .mode = GPIO_MODE_INPUT_OUTPUT, // Changed to allow reading current state
         .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type = GPIO_INTR_DISABLE
     };
     gpio_config(&io_conf);
     
-    // Default state: Both Relays OFF (Now driving LOW/0V)
-    gpio_set_level(RELAY_1_PIN, 0); 
-    gpio_set_level(RELAY_2_PIN, 0); 
-    r1_state = false;
-    r2_state = false;
+    // Sync the software state with the hardware instead of forcing to 0
+    r1_state = gpio_get_level(RELAY_1_PIN);
+    r2_state = gpio_get_level(RELAY_2_PIN);
     
-    ESP_LOGI(TAG, "Relays initialized. R1(GPIO %d), R2(GPIO %d) set to OFF (LOW)", RELAY_1_PIN, RELAY_2_PIN);
+    ESP_LOGI(TAG, "Relays initialized and synced. R1(GPIO %d): %d, R2(GPIO %d): %d", 
+             RELAY_1_PIN, r1_state, RELAY_2_PIN, r2_state);
 }
 
 void relay_set_state(int relay_num, bool on) {
