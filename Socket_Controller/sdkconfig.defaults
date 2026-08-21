@@ -50,3 +50,7 @@ CONFIG_ML_CONFIG_MAX_ALLOWED_PEERS=512
 
 # Priority peer (guaranteed WG slot even when peer table is full)
 CONFIG_ML_PRIORITY_PEER_IP=""
+
+# Hardening LWIP for WireGuard / VPN threading
+CONFIG_LWIP_TCPIP_CORE_LOCKING=y
+CONFIG_LWIP_CHECK_THREAD_SAFETY=y

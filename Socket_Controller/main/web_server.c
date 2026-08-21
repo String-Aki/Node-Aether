@@ -45,6 +45,12 @@ static const char HTML_DASHBOARD[] =
 "<div class='container'>"
 "<h2>ESP32 Control Node</h2>"
 "<div class='card'>"
+"<h3>System Resources</h3>"
+"<div class='status-row'><span>Internal RAM Free:</span><span id='s-int-ram'>...</span></div>"
+"<div class='status-row'><span>PSRAM Free:</span><span id='s-psram'>...</span></div>"
+"<div class='status-row'><span>Uptime:</span><span id='s-uptime'>...</span></div>"
+"</div>"
+"<div class='card'>"
 "<div class='status-row'><span>Laptop Socket:</span><span id='s-r1'>...</span></div>"
 "<div class='status-row'><span>Router Phone Socket:</span><span id='s-r2'>...</span></div>"
 "<div class='status-row'><span>Router Phone Battery:</span><span id='s-bat'>...</span></div>"
@@ -65,12 +71,19 @@ static const char HTML_DASHBOARD[] =
 " document.getElementById('log').innerText='Requesting...';"
 " fetch(url).then(r=>r.text()).then(t=>{document.getElementById('log').innerText=t; updateStatus();});"
 "}"
-"function updateStatus(){"
-" fetch('/api/status').then(r=>r.json()).then(d=>{"
-"  document.getElementById('s-r1').innerHTML = d.r1 ? '<span class=\"indicator on\"></span>ON' : '<span class=\"indicator off\"></span>OFF';"
-"  document.getElementById('s-r2').innerHTML = d.r2 ? '<span class=\"indicator on\"></span>ON' : '<span class=\"indicator off\"></span>OFF';"
-"  document.getElementById('s-bat').innerText = (d.bat>=0) ? d.bat+'%' : 'Waiting...';"
-" });"
+"function updateStatus() {"
+"    fetch('/api/status').then(r=>r.json()).then(d=>{"
+"        document.getElementById('s-r1').innerHTML = d.r1 ? '<span class=\"indicator on\"></span>ON' : '<span class=\"indicator off\"></span>OFF';"
+"        document.getElementById('s-r2').innerHTML = d.r2 ? '<span class=\"indicator on\"></span>ON' : '<span class=\"indicator off\"></span>OFF';"
+"        document.getElementById('s-bat').innerText = (d.bat>=0) ? d.bat+'%' : 'Waiting...';"
+"    });"
+"    fetch('/api/stats').then(r=>r.json()).then(d=>{"
+"        document.getElementById('s-int-ram').innerText = (d.internal_free / 1024).toFixed(1) + ' KB';"
+"        document.getElementById('s-psram').innerText = (d.psram_free / (1024 * 1024)).toFixed(2) + ' MB';"
+"        let mins = Math.floor(d.uptime / 60);"
+"        let secs = d.uptime % 60;"
+"        document.getElementById('s-uptime').innerText = mins + 'm ' + secs + 's';"
+"    });"
 "}"
 "setInterval(updateStatus, 5000); updateStatus();"
 "</script></body></html>";
@@ -123,6 +136,28 @@ static esp_err_t r2_on_handler(httpd_req_t *req) { relay_set_state(2, true); ret
 static esp_err_t r2_off_handler(httpd_req_t *req) { relay_set_state(2, false); return httpd_resp_send(req, "R2 OFF", -1); }
 
 /* ============================================================================
+ * System Stats API Handler
+ * ========================================================================== */
+static esp_err_t api_stats_handler(httpd_req_t *req) {
+    // Gather heap statistics
+    uint32_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    uint32_t min_free_internal = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    uint32_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    uint32_t uptime_sec = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS / 1000);
+
+    char json[256];
+    snprintf(json, sizeof(json), 
+             "{\"internal_free\":%lu, \"internal_min\":%lu, \"psram_free\":%lu, \"uptime\":%lu}",
+             (unsigned long)free_internal,
+             (unsigned long)min_free_internal,
+             (unsigned long)free_psram,
+             (unsigned long)uptime_sec);
+
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, json, HTTPD_RESP_USE_STRLEN);
+}
+
+/* ============================================================================
  * Server Init
  * ========================================================================== */
 
@@ -141,6 +176,7 @@ httpd_handle_t start_webserver(void) {
         httpd_uri_t uri_r1of = { .uri = "/relay1/off", .method = HTTP_GET, .handler = r1_off_handler };
         httpd_uri_t uri_r2on = { .uri = "/relay2/on", .method = HTTP_GET, .handler = r2_on_handler };
         httpd_uri_t uri_r2of = { .uri = "/relay2/off", .method = HTTP_GET, .handler = r2_off_handler };
+        httpd_uri_t uri_stats = { .uri = "/api/stats", .method = HTTP_GET, .handler = api_stats_handler };
 
         httpd_register_uri_handler(server, &uri_root);
         httpd_register_uri_handler(server, &uri_stat);
@@ -150,6 +186,7 @@ httpd_handle_t start_webserver(void) {
         httpd_register_uri_handler(server, &uri_r1of);
         httpd_register_uri_handler(server, &uri_r2on);
         httpd_register_uri_handler(server, &uri_r2of);
+        httpd_register_uri_handler(server, &uri_stats);
         
         ESP_LOGI(TAG, "Web server started!");
         return server;
