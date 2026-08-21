@@ -10,21 +10,14 @@
 
 static const char *TAG = "WEB_SERVER";
 
-// Store phone battery locally
-static int phone_battery = -1; // -1 means unknown
+static int phone_battery = -1;
 
-/* ============================================================================
- * Embedded Dashboard HTML (Clean CSS, Auto-updating states)
- * ========================================================================== */
-
-static const char HTML_DASHBOARD[] = 
+static const char HTML_DASHBOARD[] =
 "<!DOCTYPE html><html lang='en'><head>"
 "<meta charset='utf-8'>"
 "<meta name='viewport' content='width=device-width,initial-scale=1'>"
 "<meta name='theme-color' content='#121212'>"
 "<title>Node Dashboard</title>"
-"<!-- Injected PWA Manifest -->"
-"<link rel='manifest' href='data:application/manifest+json;base64,ewogICJuYW1lIjogIk5vZGUgRGFzaGJvYXJkIiwKICAic2hvcnRfbmFtZSI6ICJOb2RlIiwKICAic3RhcnRfdXJsIjogIi8iLAogICJkaXNwbGF5IjogInN0YW5kYWxvbmUiLAogICJiYWNrZ3JvdW5kX2NvbG9yIjogIiMxMjEyMTIiLAogICJ0aGVtZV9jb2xvciI6ICIjMTIxMjEyIgp9'>"
 "<style>"
 "body{background:#121212;color:#eee;font-family:sans-serif;text-align:center;padding:15px;margin:0}"
 ".container{max-width:400px;margin:auto}"
@@ -83,88 +76,66 @@ static const char HTML_DASHBOARD[] =
 "        let mins = Math.floor(d.uptime / 60);"
 "        let secs = d.uptime % 60;"
 "        document.getElementById('s-uptime').innerText = mins + 'm ' + secs + 's';"
-"    });"
+"    }).catch(e => console.log('Stats error:', e));"
 "}"
 "setInterval(updateStatus, 5000); updateStatus();"
 "</script></body></html>";
-
-/* ============================================================================
- * HTTP Handlers
- * ========================================================================== */
 
 static esp_err_t root_get_handler(httpd_req_t *req) {
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     return httpd_resp_send(req, HTML_DASHBOARD, HTTPD_RESP_USE_STRLEN);
 }
 
-// Provide JSON status to the frontend
 static esp_err_t api_status_handler(httpd_req_t *req) {
     char json[100];
-    snprintf(json, sizeof(json), "{\"r1\":%d, \"r2\":%d, \"bat\":%d}", 
-             relay_get_state(1) ? 1 : 0, 
-             relay_get_state(2) ? 1 : 0, 
-             phone_battery);
+    snprintf(json, sizeof(json), "{\"r1\":%d, \"r2\":%d, \"bat\":%d}",
+             relay_get_state(1) ? 1 : 0, relay_get_state(2) ? 1 : 0, phone_battery);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, json, HTTPD_RESP_USE_STRLEN);
 }
 
-// Phone calls this to update its battery
+static esp_err_t api_stats_handler(httpd_req_t *req) {
+    uint32_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    uint32_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    uint32_t uptime_sec = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS / 1000);
+
+    char json[256];
+    snprintf(json, sizeof(json),
+             "{\"internal_free\":%lu, \"psram_free\":%lu, \"uptime\":%lu}",
+             (unsigned long)free_internal, (unsigned long)free_psram, (unsigned long)uptime_sec);
+
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, json, HTTPD_RESP_USE_STRLEN);
+}
+
 static esp_err_t api_battery_handler(httpd_req_t *req) {
     char buf[50];
     if (httpd_req_get_url_query_str(req, buf, sizeof(buf)) == ESP_OK) {
         char val[10];
         if (httpd_query_key_value(buf, "level", val, sizeof(val)) == ESP_OK) {
             phone_battery = atoi(val);
-            ESP_LOGI(TAG, "Phone reported battery: %d%%", phone_battery);
         }
     }
     return httpd_resp_send(req, "OK", HTTPD_RESP_USE_STRLEN);
 }
 
-// Smart Boot for Laptop
 static esp_err_t laptop_boot_handler(httpd_req_t *req) {
-    relay_set_state(1, false); // OFF
+    relay_set_state(1, false);
     vTaskDelay(pdMS_TO_TICKS(3000));
-    relay_set_state(1, true);  // ON
+    relay_set_state(1, true);
     return httpd_resp_send(req, "Laptop Boot Cycle Triggered!", HTTPD_RESP_USE_STRLEN);
 }
 
-// Generic Relay handlers
 static esp_err_t r1_on_handler(httpd_req_t *req) { relay_set_state(1, true); return httpd_resp_send(req, "R1 ON", -1); }
 static esp_err_t r1_off_handler(httpd_req_t *req) { relay_set_state(1, false); return httpd_resp_send(req, "R1 OFF", -1); }
 static esp_err_t r2_on_handler(httpd_req_t *req) { relay_set_state(2, true); return httpd_resp_send(req, "R2 ON", -1); }
 static esp_err_t r2_off_handler(httpd_req_t *req) { relay_set_state(2, false); return httpd_resp_send(req, "R2 OFF", -1); }
 
-/* ============================================================================
- * System Stats API Handler
- * ========================================================================== */
-static esp_err_t api_stats_handler(httpd_req_t *req) {
-    // Gather heap statistics
-    uint32_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-    uint32_t min_free_internal = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
-    uint32_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-    uint32_t uptime_sec = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS / 1000);
-
-    char json[256];
-    snprintf(json, sizeof(json), 
-             "{\"internal_free\":%lu, \"internal_min\":%lu, \"psram_free\":%lu, \"uptime\":%lu}",
-             (unsigned long)free_internal,
-             (unsigned long)min_free_internal,
-             (unsigned long)free_psram,
-             (unsigned long)uptime_sec);
-
-    httpd_resp_set_type(req, "application/json");
-    return httpd_resp_send(req, json, HTTPD_RESP_USE_STRLEN);
-}
-
-/* ============================================================================
- * Server Init
- * ========================================================================== */
-
 httpd_handle_t start_webserver(void) {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 8080;
     config.ctrl_port = 32769;
+    config.max_uri_handlers = 10;
 
     httpd_handle_t server = NULL;
     if (httpd_start(&server, &config) == ESP_OK) {
@@ -187,7 +158,7 @@ httpd_handle_t start_webserver(void) {
         httpd_register_uri_handler(server, &uri_r2on);
         httpd_register_uri_handler(server, &uri_r2of);
         httpd_register_uri_handler(server, &uri_stats);
-        
+
         ESP_LOGI(TAG, "Web server started!");
         return server;
     }
