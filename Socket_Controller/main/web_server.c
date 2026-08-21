@@ -154,6 +154,7 @@ httpd_handle_t start_webserver(void) {
     config.server_port = 8080;
     config.ctrl_port = 32769;
     config.max_uri_handlers = 10;
+    config.lru_purge_enable = true;
 
     httpd_handle_t server = NULL;
     if (httpd_start(&server, &config) == ESP_OK) {
