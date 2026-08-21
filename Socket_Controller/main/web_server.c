@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "driver/temperature_sensor.h"
 
 #include "relay.h"
 #include "ethernet_wol.h"
@@ -11,6 +12,7 @@
 static const char *TAG = "WEB_SERVER";
 
 static int phone_battery = -1;
+static temperature_sensor_handle_t temp_sensor = NULL;
 
 static const char HTML_DASHBOARD[] =
 "<!DOCTYPE html><html lang='en'><head>"
@@ -41,6 +43,7 @@ static const char HTML_DASHBOARD[] =
 "<h3>System Resources</h3>"
 "<div class='status-row'><span>Internal RAM Free:</span><span id='s-int-ram'>...</span></div>"
 "<div class='status-row'><span>PSRAM Free:</span><span id='s-psram'>...</span></div>"
+"<div class='status-row'><span>Core Temp:</span><span id='s-temp'>...</span></div>"
 "<div class='status-row'><span>Uptime:</span><span id='s-uptime'>...</span></div>"
 "</div>"
 "<div class='card'>"
@@ -73,6 +76,7 @@ static const char HTML_DASHBOARD[] =
 "    fetch('/api/stats').then(r=>r.json()).then(d=>{"
 "        document.getElementById('s-int-ram').innerText = (d.internal_free / 1024).toFixed(1) + ' KB';"
 "        document.getElementById('s-psram').innerText = (d.psram_free / (1024 * 1024)).toFixed(2) + ' MB';"
+"        document.getElementById('s-temp').innerText = d.temp.toFixed(1) + ' °C';"
 "        let mins = Math.floor(d.uptime / 60);"
 "        let secs = d.uptime % 60;"
 "        document.getElementById('s-uptime').innerText = mins + 'm ' + secs + 's';"
@@ -99,10 +103,15 @@ static esp_err_t api_stats_handler(httpd_req_t *req) {
     uint32_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     uint32_t uptime_sec = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS / 1000);
 
+    float core_temp = 0.0;
+    if (temp_sensor != NULL) {
+        temperature_sensor_get_celsius(temp_sensor, &core_temp);
+    }
+
     char json[256];
     snprintf(json, sizeof(json),
-             "{\"internal_free\":%lu, \"psram_free\":%lu, \"uptime\":%lu}",
-             (unsigned long)free_internal, (unsigned long)free_psram, (unsigned long)uptime_sec);
+             "{\"internal_free\":%lu, \"psram_free\":%lu, \"uptime\":%lu, \"temp\":%.1f}",
+             (unsigned long)free_internal, (unsigned long)free_psram, (unsigned long)uptime_sec, core_temp);
 
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, json, HTTPD_RESP_USE_STRLEN);
@@ -132,6 +141,15 @@ static esp_err_t r2_on_handler(httpd_req_t *req) { relay_set_state(2, true); ret
 static esp_err_t r2_off_handler(httpd_req_t *req) { relay_set_state(2, false); return httpd_resp_send(req, "R2 OFF", -1); }
 
 httpd_handle_t start_webserver(void) {
+    // Re-claim the Temperature Sensor for our custom dashboard
+    temperature_sensor_config_t temp_sensor_config = TEMPERATURE_SENSOR_CONFIG_DEFAULT(10, 80);
+    if (temperature_sensor_install(&temp_sensor_config, &temp_sensor) == ESP_OK) {
+        temperature_sensor_enable(temp_sensor);
+        ESP_LOGI(TAG, "Temperature sensor successfully claimed by Web Server!");
+    } else {
+        ESP_LOGW(TAG, "Failed to claim temperature sensor. Did MicroLink sneak in?");
+    }
+
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 8080;
     config.ctrl_port = 32769;
