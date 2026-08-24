@@ -19,8 +19,85 @@
 #include "relay.h"
 #include "web_server.h"
 #include "diag_log.h"
+#include "led_strip.h"
 
 static const char *TAG = "main";
+static led_strip_handle_t led_strip_handle = NULL;
+
+typedef enum {
+    LED_PATTERN_CONNECTING,    // Slow blinking yellow
+    LED_PATTERN_REGISTERING,   // Rapid blinking blue
+    LED_PATTERN_CONNECTED,     // Smooth breathing emerald pulse
+    LED_PATTERN_ERROR,         // Rapid blinking red
+    LED_PATTERN_OFF
+} led_pattern_t;
+
+static volatile led_pattern_t s_led_pattern = LED_PATTERN_CONNECTING;
+
+static void led_animation_task(void *arg) {
+    uint8_t brightness = 2;
+    int8_t fade_direction = 1;
+
+    while (1) {
+        if (!led_strip_handle) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
+
+        switch (s_led_pattern) {
+            case LED_PATTERN_CONNECTED:
+                // Smooth Breathing Pulse (cycles brightness smoothly between 2 and 35)
+                brightness += fade_direction;
+                if (brightness >= 35) {
+                    fade_direction = -1;
+                } else if (brightness <= 2) {
+                    fade_direction = 1;
+                }
+
+                // Emerald Tint: Green with a touch of Blue for a clean modern glow
+                led_strip_set_pixel(led_strip_handle, 0, 0, brightness, brightness / 6);
+                led_strip_refresh(led_strip_handle);
+                vTaskDelay(pdMS_TO_TICKS(40)); // ~2.6 second complete breath cycle
+                break;
+
+            case LED_PATTERN_CONNECTING:
+                // Blinking Yellow
+                led_strip_set_pixel(led_strip_handle, 0, 30, 20, 0);
+                led_strip_refresh(led_strip_handle);
+                vTaskDelay(pdMS_TO_TICKS(500));
+                led_strip_clear(led_strip_handle);
+                led_strip_refresh(led_strip_handle);
+                vTaskDelay(pdMS_TO_TICKS(500));
+                break;
+
+            case LED_PATTERN_REGISTERING:
+                // Rapid Blinking Blue
+                led_strip_set_pixel(led_strip_handle, 0, 0, 0, 35);
+                led_strip_refresh(led_strip_handle);
+                vTaskDelay(pdMS_TO_TICKS(200));
+                led_strip_clear(led_strip_handle);
+                led_strip_refresh(led_strip_handle);
+                vTaskDelay(pdMS_TO_TICKS(200));
+                break;
+
+            case LED_PATTERN_ERROR:
+                // Fast Warning Red Flash
+                led_strip_set_pixel(led_strip_handle, 0, 40, 0, 0);
+                led_strip_refresh(led_strip_handle);
+                vTaskDelay(pdMS_TO_TICKS(150));
+                led_strip_clear(led_strip_handle);
+                led_strip_refresh(led_strip_handle);
+                vTaskDelay(pdMS_TO_TICKS(150));
+                break;
+
+            default:
+                led_strip_clear(led_strip_handle);
+                led_strip_refresh(led_strip_handle);
+                vTaskDelay(pdMS_TO_TICKS(200));
+                break;
+        }
+    }
+}
 
 #define MSG_PORT        9000
 #define MSG_SEND_INTERVAL_MS 5000
@@ -100,6 +177,27 @@ static void on_state_change(microlink_t *ml_handle, microlink_state_t state, voi
                        ? state_names[state] : "UNKNOWN";
     ESP_LOGI(TAG, "MicroLink state: %s", name);
 
+    // Update active animation pattern
+    switch(state) {
+        case ML_STATE_WIFI_WAIT:
+        case ML_STATE_CONNECTING:
+            s_led_pattern = LED_PATTERN_CONNECTING;
+            break;
+        case ML_STATE_REGISTERING:
+            s_led_pattern = LED_PATTERN_REGISTERING;
+            break;
+        case ML_STATE_CONNECTED:
+            s_led_pattern = LED_PATTERN_CONNECTED;
+            break;
+        case ML_STATE_RECONNECTING:
+        case ML_STATE_ERROR:
+            s_led_pattern = LED_PATTERN_ERROR;
+            break;
+        default:
+            s_led_pattern = LED_PATTERN_OFF;
+            break;
+    }
+
     if (state == ML_STATE_CONNECTED) {
         uint32_t ip = microlink_get_vpn_ip(ml_handle);
         char ip_str[16];
@@ -123,6 +221,20 @@ void app_main(void) {
 
     // Initialize diagnostic logger IMMEDIATELY after NVS to catch early boot crashes
     diag_log_init();
+
+    // Initialize the RGB LED on GPIO 48
+    led_strip_config_t strip_config = {
+        .strip_gpio_num = 48,
+        .max_leds = 1, // Only one LED on the board
+    };
+    led_strip_rmt_config_t rmt_config = {
+        .resolution_hz = 10 * 1000 * 1000, // 10MHz
+    };
+    if (led_strip_new_rmt_device(&strip_config, &rmt_config, &led_strip_handle) == ESP_OK) {
+        led_strip_clear(led_strip_handle);
+        // Start background animation task
+        xTaskCreate(led_animation_task, "led_anim", 2048, NULL, 2, NULL);
+    }
 
     ESP_LOGI(TAG, "Starting Modular Power Controller System...");
 
@@ -173,6 +285,14 @@ void app_main(void) {
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(1000));
         uint64_t now = (uint64_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+
+        // --- SCHEDULED WEEKLY RESTART ---
+        // 7 days = 7 * 24 * 60 * 60 * 1000 = 604800000 milliseconds
+        if (now >= 604800000ULL) {
+            ESP_LOGW(TAG, "7-day uptime reached. Performing scheduled weekly restart.");
+            vTaskDelay(pdMS_TO_TICKS(1000)); // Give the log a second to print/stream
+            esp_restart();
+        }
 
         if (now - last_status_ms >= 30000) {
             last_status_ms = now;
