@@ -18,6 +18,7 @@
 #include "ethernet_wol.h"
 #include "relay.h"
 #include "web_server.h"
+#include "diag_log.h"
 
 static const char *TAG = "main";
 
@@ -120,12 +121,18 @@ void app_main(void) {
     }
     ESP_ERROR_CHECK(ret);
 
+    // Initialize diagnostic logger IMMEDIATELY after NVS to catch early boot crashes
+    diag_log_init();
+
     ESP_LOGI(TAG, "Starting Modular Power Controller System...");
 
     wifi_init();
     xEventGroupWaitBits(wifi_event_group, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
     relay_init();
+
+    // Start the periodic heap monitor now that core systems are up
+    diag_log_start_heap_monitor();
 
     gpio_install_isr_service(0);
     init_w5500_ethernet();

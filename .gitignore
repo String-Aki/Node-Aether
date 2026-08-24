@@ -21,3 +21,4 @@ Backup/
 sdkconfig
 sdkconfig.old
 sdkconfig.credentials
+Socket_Controller/Socket_Controller.code-workspace

@@ -8,6 +8,7 @@
 
 #include "relay.h"
 #include "ethernet_wol.h"
+#include "diag_log.h"
 
 static const char *TAG = "WEB_SERVER";
 
@@ -59,6 +60,13 @@ static const char HTML_DASHBOARD[] =
 "<div class='card'><h3>Router Phone Controls</h3>"
 "<button class='btn-on' onclick='act(\"/relay2/on\")'>Force Charger ON</button>"
 "<button class='btn-off' onclick='act(\"/relay2/off\")'>Force Charger OFF</button>"
+"</div>"
+"<div class='card'><h3>Diagnostics</h3>"
+"<button class='btn-boot' style='background:#f39c12;' onclick='window.open(\"/api/last_crash\", \"_blank\")'>View Last Crash Dump</button>"
+"<div style='display:flex; gap:10px;'>"
+"<button class='btn-on' onclick='act(\"/log/stream/on\")'>Log Stream ON</button>"
+"<button class='btn-off' onclick='act(\"/log/stream/off\")'>Log Stream OFF</button>"
+"</div>"
 "</div>"
 "<div id='log'>Ready.</div>"
 "</div>"
@@ -140,6 +148,31 @@ static esp_err_t r1_off_handler(httpd_req_t *req) { relay_set_state(1, false); r
 static esp_err_t r2_on_handler(httpd_req_t *req) { relay_set_state(2, true); return httpd_resp_send(req, "R2 ON", -1); }
 static esp_err_t r2_off_handler(httpd_req_t *req) { relay_set_state(2, false); return httpd_resp_send(req, "R2 OFF", -1); }
 
+// --- Diagnostic Endpoints ---
+static esp_err_t log_stream_on_handler(httpd_req_t *req) {
+    diag_log_set_stream_active(true);
+    return httpd_resp_send(req, "TCP Log Stream ENABLED on port 9002", HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t log_stream_off_handler(httpd_req_t *req) {
+    diag_log_set_stream_active(false);
+    return httpd_resp_send(req, "TCP Log Stream DISABLED", HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t last_crash_handler(httpd_req_t *req) {
+    char *dump = diag_log_get_crash_buffer_alloc();
+    httpd_resp_set_type(req, "text/plain");
+    
+    if (dump && strlen(dump) > 0) {
+        esp_err_t res = httpd_resp_send(req, dump, HTTPD_RESP_USE_STRLEN);
+        free(dump);
+        return res;
+    } else {
+        if (dump) free(dump);
+        return httpd_resp_send(req, "No crash log found in RTC memory.", HTTPD_RESP_USE_STRLEN);
+    }
+}
+
 httpd_handle_t start_webserver(void) {
     // Re-claim the Temperature Sensor for our custom dashboard
     temperature_sensor_config_t temp_sensor_config = TEMPERATURE_SENSOR_CONFIG_DEFAULT(10, 80);
@@ -153,7 +186,7 @@ httpd_handle_t start_webserver(void) {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 8080;
     config.ctrl_port = 32769;
-    config.max_uri_handlers = 10;
+    config.max_uri_handlers = 16;
     config.lru_purge_enable = true;
 
     httpd_handle_t server = NULL;
@@ -167,6 +200,9 @@ httpd_handle_t start_webserver(void) {
         httpd_uri_t uri_r2on = { .uri = "/relay2/on", .method = HTTP_GET, .handler = r2_on_handler };
         httpd_uri_t uri_r2of = { .uri = "/relay2/off", .method = HTTP_GET, .handler = r2_off_handler };
         httpd_uri_t uri_stats = { .uri = "/api/stats", .method = HTTP_GET, .handler = api_stats_handler };
+        httpd_uri_t uri_log_on = { .uri = "/log/stream/on", .method = HTTP_GET, .handler = log_stream_on_handler };
+        httpd_uri_t uri_log_off = { .uri = "/log/stream/off", .method = HTTP_GET, .handler = log_stream_off_handler };
+        httpd_uri_t uri_last_crash = { .uri = "/api/last_crash", .method = HTTP_GET, .handler = last_crash_handler };
 
         httpd_register_uri_handler(server, &uri_root);
         httpd_register_uri_handler(server, &uri_stat);
@@ -177,6 +213,9 @@ httpd_handle_t start_webserver(void) {
         httpd_register_uri_handler(server, &uri_r2on);
         httpd_register_uri_handler(server, &uri_r2of);
         httpd_register_uri_handler(server, &uri_stats);
+        httpd_register_uri_handler(server, &uri_log_on);
+        httpd_register_uri_handler(server, &uri_log_off);
+        httpd_register_uri_handler(server, &uri_last_crash);
 
         ESP_LOGI(TAG, "Web server started!");
         return server;
