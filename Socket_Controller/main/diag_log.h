@@ -21,8 +21,19 @@ void diag_log_start_heap_monitor(void);
 void diag_log_set_stream_active(bool active);
 
 /**
- * @brief Retrieve the last crash logs from the RTC NOINIT buffer.
- * @return A dynamically allocated string containing the crash log. 
+ * @brief Retrieve the FROZEN crash snapshot from the last unexpected reset.
+ *        Unlike the live buffer, this does not change between calls.
+ *        Returns a string with reset reason + the log tail at crash time.
+ * @return A dynamically allocated string containing the crash snapshot.
+ *         The caller is responsible for freeing this memory.
+ *         Returns NULL if no crash snapshot has been recorded.
+ */
+char* diag_log_get_last_crash_snapshot_alloc(void);
+
+/**
+ * @brief Retrieve the last N lines from the LIVE ring buffer (changes on every refresh).
+ *        Useful for viewing real-time tail during debugging, but NOT a crash log.
+ * @return A dynamically allocated string containing the live buffer tail.
  *         The caller is responsible for freeing this memory.
  */
 char* diag_log_get_crash_buffer_alloc(void);

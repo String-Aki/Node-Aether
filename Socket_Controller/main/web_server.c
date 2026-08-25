@@ -160,17 +160,16 @@ static esp_err_t log_stream_off_handler(httpd_req_t *req) {
 }
 
 static esp_err_t last_crash_handler(httpd_req_t *req) {
-    char *dump = diag_log_get_crash_buffer_alloc();
+    char *dump = diag_log_get_last_crash_snapshot_alloc();
     httpd_resp_set_type(req, "text/plain");
     
-    if (dump && strlen(dump) > 0) {
+    if (dump) {
         esp_err_t res = httpd_resp_send(req, dump, HTTPD_RESP_USE_STRLEN);
         free(dump);
         return res;
-    } else {
-        if (dump) free(dump);
-        return httpd_resp_send(req, "No crash log found in RTC memory.", HTTPD_RESP_USE_STRLEN);
     }
+    return httpd_resp_send(req, "No crash snapshot recorded since last unexpected reset.",
+                            HTTPD_RESP_USE_STRLEN);
 }
 
 httpd_handle_t start_webserver(void) {

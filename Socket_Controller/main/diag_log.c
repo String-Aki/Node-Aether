@@ -21,6 +21,15 @@ RTC_NOINIT_ATTR static uint32_t s_rtc_magic;
 RTC_NOINIT_ATTR static uint32_t s_rtc_head;
 RTC_NOINIT_ATTR static char s_rtc_buf[CRASH_BUF_SIZE];
 
+// --- Frozen Crash Snapshot (separate from the live ring buffer!) ---
+// The live s_rtc_buf keeps getting overwritten by normal runtime logging
+// within seconds of boot. This buffer is written ONCE per unexpected
+// reset and then left completely alone until the next one.
+#define SNAPSHOT_MAGIC_WORD 0xC0FFEE11
+RTC_NOINIT_ATTR static uint32_t s_snapshot_magic;
+RTC_NOINIT_ATTR static char s_crash_snapshot[CRASH_BUF_SIZE + 1];
+RTC_NOINIT_ATTR static uint32_t s_snapshot_reset_reason;
+
 // --- Streaming & Queue Configuration ---
 #define LOG_QUEUE_SIZE 40
 #define LOG_MSG_MAX_LEN 128
@@ -32,6 +41,24 @@ typedef struct {
 static QueueHandle_t s_log_queue = NULL;
 static vprintf_like_t s_orig_vprintf = NULL;
 static volatile bool s_stream_active = false;
+
+// --- Helper: Convert reset reason enum to readable string ---
+static const char* reset_reason_to_str(esp_reset_reason_t reason) {
+    switch (reason) {
+        case ESP_RST_UNKNOWN:    return "UNKNOWN";
+        case ESP_RST_POWERON:    return "POWERON";
+        case ESP_RST_EXT:        return "EXT";
+        case ESP_RST_SW:         return "SW";
+        case ESP_RST_PANIC:      return "PANIC";
+        case ESP_RST_INT_WDT:    return "INT_WDT";
+        case ESP_RST_TASK_WDT:   return "TASK_WDT";
+        case ESP_RST_WDT:        return "WDT";
+        case ESP_RST_DEEPSLEEP:  return "DEEPSLEEP";
+        case ESP_RST_BROWNOUT:   return "BROWNOUT";
+        case ESP_RST_SDIO:       return "SDIO";
+        default:                 return "???";
+    }
+}
 
 // --- VPrintf Hook ---
 static int diag_vprintf(const char *fmt, va_list args) {
@@ -134,31 +161,69 @@ void diag_log_init(void) {
         memset(s_rtc_buf, 0, CRASH_BUF_SIZE);
         s_rtc_head = 0;
         s_rtc_magic = RTC_MAGIC_WORD;
-    } else if (esp_reset_reason() == ESP_RST_PANIC) {
-        // If we just recovered from a crash, print the final logs to UART
-        ESP_LOGE(TAG, "CRASH DETECTED! Previous RTC Buffer Contents:");
-        char *crash_dump = diag_log_get_crash_buffer_alloc();
-        if (crash_dump) {
-            printf("\n--- BEGIN CRASH DUMP ---\n%s\n--- END CRASH DUMP ---\n", crash_dump);
-            free(crash_dump);
+    } else {
+        // RTC was already initialized, so this is a reboot.
+        // Check if it was an unexpected reset and freeze the snapshot.
+        esp_reset_reason_t reason = esp_reset_reason();
+        bool unexpected = (reason == ESP_RST_PANIC   ||
+                            reason == ESP_RST_INT_WDT ||
+                            reason == ESP_RST_TASK_WDT ||
+                            reason == ESP_RST_WDT      ||
+                            reason == ESP_RST_BROWNOUT);
+
+        if (unexpected) {
+            ESP_LOGE(TAG, "UNEXPECTED RESET DETECTED (%s)! Freezing crash snapshot...", 
+                     reset_reason_to_str(reason));
+
+            // Snapshot the CURRENT contents of the live ring buffer RIGHT NOW,
+            // into a separate buffer that nothing else will ever write to,
+            // before WiFi/heap-monitor/etc. logging starts overwriting s_rtc_buf.
+            int pos = 0;
+            for (int i = 0; i < CRASH_BUF_SIZE; i++) {
+                uint32_t idx = (s_rtc_head + i) % CRASH_BUF_SIZE;
+                char c = s_rtc_buf[idx];
+                if (c != '\0') {
+                    s_crash_snapshot[pos++] = c;
+                }
+            }
+            s_crash_snapshot[pos] = '\0';
+            s_snapshot_reset_reason = (uint32_t)reason;
+            s_snapshot_magic = SNAPSHOT_MAGIC_WORD;
+
+            printf("\n--- BEGIN CRASH DUMP (reason=%s) ---\n%s\n--- END CRASH DUMP ---\n",
+                   reset_reason_to_str(reason), s_crash_snapshot);
         }
     }
 
     s_log_queue = xQueueCreate(LOG_QUEUE_SIZE, sizeof(log_msg_t));
     s_orig_vprintf = esp_log_set_vprintf(diag_vprintf);
-
-    // REMOVED log_relay_task creation from here.
 }
 
 void diag_log_start_heap_monitor(void) {
     xTaskCreate(heap_monitor_task, "heap_monitor", 4096, NULL, 4, NULL);
     
-    // ADDED log_relay_task creation here (after networking is initialized)
+    // Create log_relay_task after networking is initialized
     xTaskCreate(log_relay_task, "log_relay", 3072, NULL, 5, NULL);
 }
 
 void diag_log_set_stream_active(bool active) {
     s_stream_active = active;
+}
+
+char* diag_log_get_last_crash_snapshot_alloc(void) {
+    if (s_snapshot_magic != SNAPSHOT_MAGIC_WORD) {
+        return NULL; // no crash snapshot recorded
+    }
+    char *out = malloc(CRASH_BUF_SIZE + 128);
+    if (!out) return NULL;
+    
+    snprintf(out, CRASH_BUF_SIZE + 128,
+             "=== CRASH SNAPSHOT ===\n"
+             "Reset reason: %s\n"
+             "======================\n\n%s",
+             reset_reason_to_str((esp_reset_reason_t)s_snapshot_reset_reason), 
+             s_crash_snapshot);
+    return out;
 }
 
 char* diag_log_get_crash_buffer_alloc(void) {
