@@ -21,7 +21,11 @@
 #include "diag_log.h"
 #include "led_strip.h"
 
+#define ENABLE_ONBOARD_LED 0  /* Set to 1 to re-enable the built-in LED */
+
 static const char *TAG = "main";
+
+#if ENABLE_ONBOARD_LED
 static led_strip_handle_t led_strip_handle = NULL;
 
 typedef enum {
@@ -98,6 +102,7 @@ static void led_animation_task(void *arg) {
         }
     }
 }
+#endif
 
 #define MSG_PORT        9000
 #define MSG_SEND_INTERVAL_MS 5000
@@ -177,6 +182,7 @@ static void on_state_change(microlink_t *ml_handle, microlink_state_t state, voi
                        ? state_names[state] : "UNKNOWN";
     ESP_LOGI(TAG, "MicroLink state: %s", name);
 
+#if ENABLE_ONBOARD_LED
     // Update active animation pattern
     switch(state) {
         case ML_STATE_WIFI_WAIT:
@@ -197,6 +203,7 @@ static void on_state_change(microlink_t *ml_handle, microlink_state_t state, voi
             s_led_pattern = LED_PATTERN_OFF;
             break;
     }
+#endif
 
     if (state == ML_STATE_CONNECTED) {
         uint32_t ip = microlink_get_vpn_ip(ml_handle);
@@ -222,6 +229,7 @@ void app_main(void) {
     // Initialize diagnostic logger IMMEDIATELY after NVS to catch early boot crashes
     diag_log_init();
 
+#if ENABLE_ONBOARD_LED
     // Initialize the RGB LED on GPIO 48
     led_strip_config_t strip_config = {
         .strip_gpio_num = 48,
@@ -235,6 +243,7 @@ void app_main(void) {
         // Start background animation task
         xTaskCreate(led_animation_task, "led_anim", 2048, NULL, 2, NULL);
     }
+#endif
 
     ESP_LOGI(TAG, "Starting Modular Power Controller System...");
 
