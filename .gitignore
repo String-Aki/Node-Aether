@@ -16,9 +16,13 @@ dependencies.lock
 *.log
 *.bak
 Backup/
+Logs/
 
 # CRITICAL: Security and Configuration files
 sdkconfig
 sdkconfig.old
 sdkconfig.credentials
 Socket_Controller/Socket_Controller.code-workspace
+
+# Builds
+fonts_build/
