@@ -20,6 +20,7 @@
 #include "web_server.h"
 #include "diag_log.h"
 #include "led_strip.h"
+#include "display_manager.h"
 
 #define ENABLE_ONBOARD_LED 0  /* Set to 1 to re-enable the built-in LED */
 
@@ -228,6 +229,89 @@ void app_main(void) {
 
     // Initialize diagnostic logger IMMEDIATELY after NVS to catch early boot crashes
     diag_log_init();
+
+    /* ── Display Init & Boot Splash ─────────────────────────────────────── */
+    ESP_LOGI(TAG, "Initializing Display Manager...");
+    ESP_ERROR_CHECK(display_manager_init());
+
+    if (display_manager_lock(1000)) {
+        lv_obj_t *scr = lv_scr_act();
+
+        /* Background: near-black navy */
+        lv_obj_set_style_bg_color(scr, lv_color_hex(0x0D1117), 0);
+        lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+
+        /* ── Header bar ──────────────────────────────────────────────── */
+        lv_obj_t *header = lv_obj_create(scr);
+        lv_obj_set_size(header, 320, 42);
+        lv_obj_set_pos(header, 0, 0);
+        lv_obj_set_style_bg_color(header, lv_color_hex(0x0AA8D4), 0); /* Cyan-blue */
+        lv_obj_set_style_border_width(header, 0, 0);
+        lv_obj_set_style_radius(header, 0, 0);
+        lv_obj_set_style_pad_all(header, 0, 0);
+
+        lv_obj_t *title = lv_label_create(header);
+        lv_label_set_text(title, "  NODE-AETHER  |  Socket Controller");
+        lv_obj_set_style_text_color(title, lv_color_hex(0x0D1117), 0);
+        lv_obj_align(title, LV_ALIGN_LEFT_MID, 8, 0);
+
+        /* ── Centre status line ──────────────────────────────────────── */
+        lv_obj_t *status_lbl = lv_label_create(scr);
+        lv_label_set_text(status_lbl, LV_SYMBOL_OK "  Display OK  —  System Booting...");
+        lv_obj_set_style_text_color(status_lbl, lv_color_hex(0x00FF99), 0); /* Mint green */
+        lv_obj_align(status_lbl, LV_ALIGN_CENTER, 0, -18);
+
+        /* ── Subtitle / build info ───────────────────────────────────── */
+        lv_obj_t *sub_lbl = lv_label_create(scr);
+        lv_label_set_text(sub_lbl, "ESP32-S3  |  ESP-IDF v5.x  |  LVGL 8.3");
+        lv_obj_set_style_text_color(sub_lbl, lv_color_hex(0x4A6080), 0); /* Muted slate */
+        lv_obj_align(sub_lbl, LV_ALIGN_CENTER, 0, 6);
+
+        /* ── Bottom status badges ────────────────────────────────────── */
+        /* WiFi — amber (waiting to connect) */
+        lv_obj_t *wifi_box = lv_obj_create(scr);
+        lv_obj_set_size(wifi_box, 90, 34);
+        lv_obj_align(wifi_box, LV_ALIGN_BOTTOM_LEFT, 8, -8);
+        lv_obj_set_style_bg_color(wifi_box, lv_color_hex(0xF59E0B), 0);
+        lv_obj_set_style_border_width(wifi_box, 0, 0);
+        lv_obj_set_style_radius(wifi_box, 6, 0);
+        lv_obj_set_style_pad_all(wifi_box, 0, 0);
+        lv_obj_t *wifi_lbl = lv_label_create(wifi_box);
+        lv_label_set_text(wifi_lbl, LV_SYMBOL_WIFI "  WiFi");
+        lv_obj_set_style_text_color(wifi_lbl, lv_color_hex(0x0D1117), 0);
+        lv_obj_align(wifi_lbl, LV_ALIGN_CENTER, 0, 0);
+
+        /* VPN — grey (offline) */
+        lv_obj_t *vpn_box = lv_obj_create(scr);
+        lv_obj_set_size(vpn_box, 90, 34);
+        lv_obj_align(vpn_box, LV_ALIGN_BOTTOM_MID, 0, -8);
+        lv_obj_set_style_bg_color(vpn_box, lv_color_hex(0x1E2D3D), 0);
+        lv_obj_set_style_border_color(vpn_box, lv_color_hex(0x2D4560), 0);
+        lv_obj_set_style_border_width(vpn_box, 1, 0);
+        lv_obj_set_style_radius(vpn_box, 6, 0);
+        lv_obj_set_style_pad_all(vpn_box, 0, 0);
+        lv_obj_t *vpn_lbl = lv_label_create(vpn_box);
+        lv_label_set_text(vpn_lbl, LV_SYMBOL_EYE_CLOSE "  VPN");
+        lv_obj_set_style_text_color(vpn_lbl, lv_color_hex(0x4A6080), 0);
+        lv_obj_align(vpn_lbl, LV_ALIGN_CENTER, 0, 0);
+
+        /* Relay — grey (uninitialised) */
+        lv_obj_t *relay_box = lv_obj_create(scr);
+        lv_obj_set_size(relay_box, 90, 34);
+        lv_obj_align(relay_box, LV_ALIGN_BOTTOM_RIGHT, -8, -8);
+        lv_obj_set_style_bg_color(relay_box, lv_color_hex(0x1E2D3D), 0);
+        lv_obj_set_style_border_color(relay_box, lv_color_hex(0x2D4560), 0);
+        lv_obj_set_style_border_width(relay_box, 1, 0);
+        lv_obj_set_style_radius(relay_box, 6, 0);
+        lv_obj_set_style_pad_all(relay_box, 0, 0);
+        lv_obj_t *relay_lbl = lv_label_create(relay_box);
+        lv_label_set_text(relay_lbl, LV_SYMBOL_POWER "  Relay");
+        lv_obj_set_style_text_color(relay_lbl, lv_color_hex(0x4A6080), 0);
+        lv_obj_align(relay_lbl, LV_ALIGN_CENTER, 0, 0);
+
+        display_manager_unlock();
+    }
+    /* ─────────────────────────────────────────────────────────────────── */
 
 #if ENABLE_ONBOARD_LED
     // Initialize the RGB LED on GPIO 48
