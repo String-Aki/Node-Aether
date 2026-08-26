@@ -20,17 +20,30 @@ static SemaphoreHandle_t lvgl_mux = NULL;
 static esp_lcd_panel_handle_t panel_handle = NULL;
 
 /* ---------------------------------------------------------------------------
- * LVGL Flush Callback (Synchronous Mode)
+ * LVGL Flush Callback
  *
- * Sends the rendered draw buffer to the ST7789 over SPI, then immediately
- * signals LVGL that the flush is done. This is the simplest, most robust
- * approach — no DMA lifecycle management needed. LVGL's 10ms task sleep
- * already de-couples rendering from the network tasks on Core 0.
+ * Sends the rendered draw buffer to the ST7789 over SPI via DMA. Note this
+ * is NOT synchronous — draw_bitmap() queues the DMA transaction and returns
+ * immediately (trans_queue_depth = 10 below). lv_disp_flush_ready() is
+ * deliberately NOT called here; calling it here was the original bug, since
+ * LVGL would then start overwriting buf1 while the previous frame's bytes
+ * were still being clocked out over SPI — producing the torn/ghosted frames.
+ * The real completion signal comes from lvgl_flush_ready_cb() below, fired
+ * by the esp_lcd IO layer once the transaction genuinely finishes.
  * ------------------------------------------------------------------------- */
 static void lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_map) {
     esp_lcd_panel_handle_t panel = (esp_lcd_panel_handle_t)drv->user_data;
     esp_lcd_panel_draw_bitmap(panel, area->x1, area->y1, area->x2 + 1, area->y2 + 1, color_map);
-    lv_disp_flush_ready(drv); /* Signal LVGL: buffer consumed, ready for next frame */
+}
+
+/* ---------------------------------------------------------------------------
+ * SPI Transfer-Done Callback (fires from ISR context when DMA finishes)
+ * This is the ONLY correct place to tell LVGL the buffer is free again.
+ * ------------------------------------------------------------------------- */
+static bool lvgl_flush_ready_cb(esp_lcd_panel_io_handle_t io, esp_lcd_panel_io_event_data_t *edata, void *user_ctx) {
+    lv_disp_drv_t *disp_drv = (lv_disp_drv_t *)user_ctx;
+    lv_disp_flush_ready(disp_drv);
+    return false; // no higher-priority task woken here
 }
 
 /* ---------------------------------------------------------------------------
@@ -77,8 +90,9 @@ static void lvgl_port_task(void *arg) {
  *   2. esp_lcd Panel IO (SPI abstraction layer)
  *   3. ST7789 vendor panel driver (reset, init, landscape orientation)
  *   4. LVGL init + DMA draw buffer + display driver registration
- *   5. esp_timer tick source (2 ms)
- *   6. FreeRTOS LVGL port task
+ *   5. Real SPI transfer-done callback registration (see note above)
+ *   6. esp_timer tick source (2 ms)
+ *   7. FreeRTOS LVGL port task
  * ------------------------------------------------------------------------- */
 esp_err_t display_manager_init(void) {
     lvgl_mux = xSemaphoreCreateMutex();
@@ -101,15 +115,11 @@ esp_err_t display_manager_init(void) {
     esp_lcd_panel_io_spi_config_t io_config = {
         .dc_gpio_num       = PIN_LCD_DC,
         .cs_gpio_num       = PIN_LCD_CS,
-        .pclk_hz           = 40 * 1000 * 1000, /* 40 MHz */
+        .pclk_hz           = 10 * 1000 * 1000, /* 40 MHz */
         .lcd_cmd_bits      = 8,
         .lcd_param_bits    = 8,
         .spi_mode          = 0,
         .trans_queue_depth = 10,
-        /* NOTE: on_color_trans_done is NOT set here. In ESP-IDF v5.x the
-         * callback must be registered via esp_lcd_panel_io_register_event_callbacks()
-         * AFTER the display driver is created. We use the synchronous flush path
-         * so this callback is not needed. */
     };
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)SPI2_HOST, &io_config, &io_handle));
 
@@ -161,7 +171,19 @@ esp_err_t display_manager_init(void) {
     lv_disp_drv_register(&disp_drv);
     ESP_LOGI(TAG, "LVGL display driver registered (%d×%d)", LCD_H_RES, LCD_V_RES);
 
-    /* ── 5. LVGL Tick Timer (2 ms hardware timer) ──────────────────────── */
+    /* ── 5. Real SPI Transfer-Done Callback ─────────────────────────────
+     * MUST be registered so lv_disp_flush_ready() only fires once the
+     * DMA transaction has actually completed on the wire — not when
+     * draw_bitmap() merely finishes queueing it (trans_queue_depth = 10
+     * means draw_bitmap returns almost instantly). This was the root
+     * cause of the torn/ghosted display output. */
+    esp_lcd_panel_io_callbacks_t cbs = {
+        .on_color_trans_done = lvgl_flush_ready_cb,
+    };
+    ESP_ERROR_CHECK(esp_lcd_panel_io_register_event_callbacks(io_handle, &cbs, &disp_drv));
+    ESP_LOGI(TAG, "SPI transfer-done callback registered");
+
+    /* ── 6. LVGL Tick Timer (2 ms hardware timer) ──────────────────────── */
     const esp_timer_create_args_t tick_timer_args = {
         .callback = &lvgl_tick_timer_cb,
         .name     = "lvgl_tick",
@@ -170,7 +192,7 @@ esp_err_t display_manager_init(void) {
     ESP_ERROR_CHECK(esp_timer_create(&tick_timer_args, &tick_timer));
     ESP_ERROR_CHECK(esp_timer_start_periodic(tick_timer, 2000)); /* 2 ms = 2000 µs */
 
-    /* ── 6. LVGL Port Task (Core 1, 8 KB stack) ────────────────────────── */
+    /* ── 7. LVGL Port Task (Core 1, 8 KB stack) ────────────────────────── */
     BaseType_t ret = xTaskCreatePinnedToCore(
         lvgl_port_task, "lvgl_port",
         8192,       /* 8 KB — LVGL timer_handler needs headroom for animations */

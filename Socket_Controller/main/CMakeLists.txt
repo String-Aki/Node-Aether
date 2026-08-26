@@ -1,5 +1,23 @@
 idf_component_register(
-    SRCS "diag_log.c" "web_server.c" "main.c" "relay.c" "wifi_manager.c" "ethernet_wol.c" "display_manager.c"
-    INCLUDE_DIRS "."
-    REQUIRES microlink nvs_flash esp_wifi esp_netif esp_event esp_eth esp_lcd lvgl
+    SRCS
+        "main.c"
+        "display_manager.c"
+        "fonts/ui_font_orbitron_12.c"
+        "fonts/ui_font_orbitron_16.c"
+        "fonts/ui_font_orbitron_20.c"
+        "fonts/ui_font_orbitron_24.c"
+        "fonts/ui_font_share_tech_mono_12.c"
+        "fonts/ui_font_share_tech_mono_16.c"
+        "fonts/ui_font_share_tech_mono_20.c"
+        "fonts/ui_font_share_tech_mono_24.c"
+        "fonts/ui_font_silkscreen_12.c"
+        "fonts/ui_font_silkscreen_16.c"
+        "fonts/ui_font_silkscreen_20.c"
+        "fonts/ui_font_silkscreen_24.c"
+        "fonts/ui_font_vt323_12.c"
+        "fonts/ui_font_vt323_16.c"
+        "fonts/ui_font_vt323_20.c"
+        "fonts/ui_font_vt323_24.c"
+    INCLUDE_DIRS "." "fonts"
+    REQUIRES esp_lcd lvgl
 )

@@ -16,6 +16,10 @@ static const char *TAG = "WOL_ETH";
 #define W5500_RST_PIN 9
 
 void init_w5500_ethernet(void) {
+#if !ENABLE_ETHERNET_WOL
+    ESP_LOGW(TAG, "Ethernet WOL disabled (ENABLE_ETHERNET_WOL=0 in ethernet_wol.h). Skipping SPI/W5500 init.");
+    return;
+#else
     ESP_LOGI(TAG, "Initializing SPI Bus...");
     spi_bus_config_t buscfg = {
         .miso_io_num = SPI_MISO_PIN,
@@ -24,9 +28,9 @@ void init_w5500_ethernet(void) {
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
     };
-    
+
     // Initialize SPI bus, but ignore "invalid state" if it's already initialized
-    esp_err_t err = spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_CH_AUTO);
+    esp_err_t err = spi_bus_initialize(SPI3_HOST, &buscfg, SPI_DMA_CH_AUTO);
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         ESP_LOGE(TAG, "Failed to initialize SPI bus. Continuing without Ethernet.");
         return;
@@ -46,26 +50,26 @@ void init_w5500_ethernet(void) {
     phy_config.phy_addr = 1;
     phy_config.reset_gpio_num = W5500_RST_PIN;
 
-    eth_w5500_config_t w5500_config = ETH_W5500_DEFAULT_CONFIG(SPI2_HOST, &devcfg);
+    eth_w5500_config_t w5500_config = ETH_W5500_DEFAULT_CONFIG(SPI3_HOST, &devcfg);
     w5500_config.int_gpio_num = W5500_INT_PIN;
 
     esp_eth_mac_t *mac = esp_eth_mac_new_w5500(&w5500_config, &mac_config);
     esp_eth_phy_t *phy = esp_eth_phy_new_w5500(&phy_config);
 
     esp_eth_config_t eth_config = ETH_DEFAULT_CONFIG(mac, phy);
-    
+
     ESP_LOGI(TAG, "Attempting to detect and install W5500 Ethernet module...");
-    
+
     // GRACEFUL CHECK: Do not use ESP_ERROR_CHECK here!
     err = esp_eth_driver_install(&eth_config, &eth_handle);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "W5500 module timed out or not detected!");
         ESP_LOGW(TAG, "Continuing without Ethernet WOL capability. Plug it in and reboot later to enable.");
-        
+
         // Clean up MAC and PHY objects to prevent memory leaks
         if (mac) mac->del(mac);
         if (phy) phy->del(phy);
-        
+
         return; // Safely exit the function without crashing
     }
 
@@ -75,8 +79,9 @@ void init_w5500_ethernet(void) {
         ESP_LOGE(TAG, "Failed to start Ethernet driver! Continuing without it.");
         return;
     }
-    
+
     ESP_LOGI(TAG, "W5500 Initialized and Link Started Successfully!");
+#endif
 }
 
 void send_wake_on_lan(void) {
