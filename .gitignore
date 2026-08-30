@@ -26,3 +26,9 @@ Socket_Controller/Socket_Controller.code-workspace
 
 # Builds
 fonts_build/
+
+#PRD
+PRD/
+
+#skills
+.agents/
