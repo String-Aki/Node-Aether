@@ -2,6 +2,14 @@ idf_component_register(
     SRCS
         "main.c"
         "display_manager.c"
+        "dashboard_ui.c"
+        "node_state.c"
+        "display_controller.c"
+        "relay.c"
+        "wifi_manager.c"
+        "web_server.c"
+        "diag_log.c"
+        "ethernet_wol.c"
         "fonts/ui_font_orbitron_12.c"
         "fonts/ui_font_orbitron_16.c"
         "fonts/ui_font_orbitron_20.c"
@@ -19,5 +27,5 @@ idf_component_register(
         "fonts/ui_font_vt323_20.c"
         "fonts/ui_font_vt323_24.c"
     INCLUDE_DIRS "." "fonts"
-    REQUIRES esp_lcd lvgl
+    REQUIRES esp_lcd lvgl esp_wifi esp_http_server driver nvs_flash microlink esp_eth
 )

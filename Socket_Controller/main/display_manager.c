@@ -192,14 +192,18 @@ esp_err_t display_manager_init(void) {
     ESP_ERROR_CHECK(esp_timer_create(&tick_timer_args, &tick_timer));
     ESP_ERROR_CHECK(esp_timer_start_periodic(tick_timer, 2000)); /* 2 ms = 2000 µs */
 
-    /* ── 7. LVGL Port Task (Core 1, 8 KB stack) ────────────────────────── */
-    BaseType_t ret = xTaskCreatePinnedToCore(
+    /* ── 7. LVGL Port Task (Core 1, 12 KB stack in PSRAM) ─────────────────
+     * Stack lives in PSRAM — frees internal SRAM for DMA, WiFi and LwIP
+     * buffers. The port task is IO-bound (waits on the mutex / vTaskDelay),
+     * so PSRAM latency has no measurable impact on frame rate. */
+    BaseType_t ret = xTaskCreatePinnedToCoreWithCaps(
         lvgl_port_task, "lvgl_port",
-        8192,       /* 8 KB — LVGL timer_handler needs headroom for animations */
+        12288,      /* 12 KB — headroom for 5-screen animations */
         NULL, 5,    /* Priority 5 */
-        NULL, 1     /* Core 1 */
+        NULL, 1,    /* Core 1 */
+        MALLOC_CAP_SPIRAM
     );
-    assert(ret == pdPASS && "Failed to create LVGL port task");
+    assert(ret == pdPASS && "Failed to create LVGL port task in PSRAM");
 
     return ESP_OK;
 }

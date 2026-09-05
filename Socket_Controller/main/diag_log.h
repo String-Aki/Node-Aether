@@ -38,4 +38,15 @@ char* diag_log_get_last_crash_snapshot_alloc(void);
  */
 char* diag_log_get_crash_buffer_alloc(void);
 
+/**
+ * @brief Fill `out` with the last `n` log lines from the live RTC ring buffer.
+ *        Each element in `out` is a null-terminated string of up to `line_len-1` chars.
+ *        Lines are ordered oldest-first; out[n-1] is the newest (bottom of display).
+ *        Call from any task — reads the ring buffer safely.
+ * @param out      2-D char array, caller-owned. Dimensions: [n][line_len].
+ * @param n        Number of lines to fill (matches LOG_SCREEN_LINES = 10).
+ * @param line_len Max bytes per line including null terminator.
+ */
+void diag_log_get_last_n_lines(char out[][80], int n, int line_len);
+
 #endif // DIAG_LOG_H

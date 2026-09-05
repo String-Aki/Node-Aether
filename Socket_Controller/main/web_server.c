@@ -223,3 +223,5 @@ httpd_handle_t start_webserver(void) {
 }
 
 void stop_webserver(httpd_handle_t server) { if (server) httpd_stop(server); }
+
+int web_server_get_phone_battery(void) { return phone_battery; }

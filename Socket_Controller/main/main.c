@@ -1,118 +1,114 @@
+/**
+ * main.c
+ *
+ * Node-Aether Socket Controller — app_main entry point.
+ *
+ * Startup sequence:
+ *   1. diag_log_init()           — capture crash snapshot before anything overwrites RTC RAM
+ *   2. relay_init()              — GPIO setup (safe to do early)
+ *   3. display_manager_init()    — SPI + ST7789 + LVGL + port task (Core 1)
+ *   4. wifi_init()               — connect to configured AP
+ *   5. Wait for WiFi             — block until IP assigned (5 s timeout)
+ *   6. start_webserver()         — esp_httpd on port 8080
+ *   7. display_controller_init() — register /screen/N and /slide/on|off on httpd
+ *   8. node_state_set_temp_sensor() — inject temp handle from web_server
+ *   9. dashboard_ui_init()       — build all 5 LVGL screens (runs in LVGL lock)
+ *  10. lv_timer_create()         — 2 s refresh timer drives dashboard_ui_timer_cb
+ *  11. diag_log_start_heap_monitor() — heap/log-relay tasks
+ */
+
 #include "display_manager.h"
+#include "wifi_manager.h"
+#include "web_server.h"
+#include "relay.h"
+#include "diag_log.h"
+#include "display_controller.h"
+#include "node_state.h"
+#include "dashboard_ui.h"
+
 #include "esp_log.h"
+#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "fonts/ui_fonts.h"
-#include "lvgl.h"
+#include "freertos/event_groups.h"
+#include "driver/temperature_sensor.h"
 #include <stdio.h>
 
-static const char *TAG = "FONT_SHOWCASE";
+static const char *TAG = "MAIN";
+
+/* Dashboard refresh — matches TICK_MS in dashboard_ui.c */
+#define DASHBOARD_REFRESH_MS 2000
+
+/* ── Helper: acquire a temp sensor handle for node_state ──────────────────── */
+static temperature_sensor_handle_t init_temp_sensor(void) {
+    temperature_sensor_handle_t handle = NULL;
+    temperature_sensor_config_t cfg = TEMPERATURE_SENSOR_CONFIG_DEFAULT(10, 80);
+    if (temperature_sensor_install(&cfg, &handle) == ESP_OK) {
+        temperature_sensor_enable(handle);
+        ESP_LOGI(TAG, "Temperature sensor ready");
+    } else {
+        ESP_LOGW(TAG, "Temperature sensor unavailable (web_server may own it)");
+    }
+    return handle;
+}
 
 void app_main(void) {
-  ESP_LOGI(TAG, "=== 1-BIT BITMAP FONT SHOWCASE ===");
+    /* ── 1. Diagnostic logging (must be first — captures crash snapshot) ─── */
+    diag_log_init();
+    ESP_LOGI(TAG, "=== Node-Aether Socket Controller booting ===");
 
-  ESP_ERROR_CHECK(display_manager_init());
+    /* ── 2. Relay GPIO ───────────────────────────────────────────────────── */
+    relay_init();
 
-  if (display_manager_lock(1000)) {
-    lv_obj_t *scr = lv_scr_act();
-    lv_obj_set_style_bg_color(scr, lv_color_hex(0x081018), 0);
-    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+    /* ── 3. Display (SPI + ST7789 + LVGL port task on Core 1) ───────────── */
+    ESP_ERROR_CHECK(display_manager_init());
 
-    /* Header bar — Silkscreen 12 used here, grain-free on cyan fill */
-    lv_obj_t *hdr = lv_obj_create(scr);
-    lv_obj_set_size(hdr, 320, 28);
-    lv_obj_set_pos(hdr, 0, 0);
-    lv_obj_set_style_bg_color(hdr, lv_color_hex(0x08A6D6), 0);
-    lv_obj_set_style_border_width(hdr, 0, 0);
-    lv_obj_set_style_radius(hdr, 0, 0);
-    lv_obj_set_style_pad_all(hdr, 0, 0);
-    lv_obj_t *hdr_lbl = lv_label_create(hdr);
-    lv_label_set_text(hdr_lbl, "BITMAP FONT SHOWCASE  1BPP  ZERO GRAIN");
-    lv_obj_set_style_text_font(hdr_lbl, &ui_font_silkscreen_12, 0);
-    lv_obj_set_style_text_color(hdr_lbl, lv_color_hex(0x081018), 0);
-    lv_obj_align(hdr_lbl, LV_ALIGN_CENTER, 0, 0);
+    /* ── 4. WiFi ─────────────────────────────────────────────────────────── */
+    wifi_init();
 
-    /* Colors that were grainy with Montserrat AA — bitmap should be clean */
-    lv_color_t cyan  = lv_color_hex(0x00FFFF);
-    lv_color_t mint  = lv_color_hex(0x00FF99);
-    lv_color_t white = lv_color_hex(0xFFFFFF);
-    lv_color_t gray  = lv_color_hex(0x4A6080);
+    /* ── 5. Wait up to 5 s for IP (non-blocking dashboard will show
+     *       RECONNECTING until WiFi comes up on subsequent ticks) ────────── */
+    EventBits_t bits = xEventGroupWaitBits(
+        wifi_event_group, WIFI_CONNECTED_BIT,
+        pdFALSE, pdTRUE, pdMS_TO_TICKS(5000)
+    );
+    if (bits & WIFI_CONNECTED_BIT) {
+        ESP_LOGI(TAG, "WiFi connected");
+    } else {
+        ESP_LOGW(TAG, "WiFi not connected within 5 s — continuing anyway");
+    }
 
-    int y = 36;
-    lv_obj_t *l, *d;
+    /* ── 6. Web server (port 8080) ───────────────────────────────────────── */
+    httpd_handle_t server = start_webserver();
+    if (!server) {
+        ESP_LOGE(TAG, "Failed to start web server");
+    }
 
-    /* ── Orbitron ───────────────────────────────────────────── */
-    l = lv_label_create(scr);
-    lv_label_set_text(l, "Orbitron 16  NODE AETHER 192.168.1.1");
-    lv_obj_set_style_text_font(l, &ui_font_orbitron_16, 0);
-    lv_obj_set_style_text_color(l, cyan, 0);
-    lv_obj_set_pos(l, 6, y); y += 22;
+    /* ── 7. Display screen-switch HTTP endpoints (/screen/N, /slide/on|off) ── */
+    display_controller_init(server);
 
-    l = lv_label_create(scr);
-    lv_label_set_text(l, "Orbitron 12  STATUS: ONLINE");
-    lv_obj_set_style_text_font(l, &ui_font_orbitron_12, 0);
-    lv_obj_set_style_text_color(l, mint, 0);
-    lv_obj_set_pos(l, 6, y); y += 20;
+    /* ── 8. Temperature sensor for node_state ────────────────────────────── */
+    temperature_sensor_handle_t temp_handle = init_temp_sensor();
+    node_state_set_temp_sensor(temp_handle);
 
-    d = lv_obj_create(scr);
-    lv_obj_set_size(d, 320, 1); lv_obj_set_pos(d, 0, y); y += 6;
-    lv_obj_set_style_bg_color(d, lv_color_hex(0x1A2A3A), 0);
-    lv_obj_set_style_border_width(d, 0, 0); lv_obj_set_style_radius(d, 0, 0);
+    /* ── 9. Dashboard UI: build all 5 screens inside the LVGL lock ───────── */
+    if (display_manager_lock(1000)) {
+        /* Do an initial state snapshot so the UI has real data on first draw */
+        node_state_tick();
+        dashboard_ui_init();
+        display_manager_unlock();
+    } else {
+        ESP_LOGE(TAG, "Could not acquire LVGL lock — dashboard not initialised");
+    }
 
-    /* ── Share Tech Mono ────────────────────────────────────── */
-    l = lv_label_create(scr);
-    lv_label_set_text(l, "ShareTechMono 16  10.0.0.1:8080");
-    lv_obj_set_style_text_font(l, &ui_font_share_tech_mono_16, 0);
-    lv_obj_set_style_text_color(l, white, 0);
-    lv_obj_set_pos(l, 6, y); y += 22;
+    /* ── 10. 2 s refresh timer — drives state updates + auto-slide ───────── */
+    lv_timer_create(dashboard_ui_timer_cb, DASHBOARD_REFRESH_MS, NULL);
 
-    l = lv_label_create(scr);
-    lv_label_set_text(l, "ShareTechMono 12  TX:34kbps  RX:112kbps");
-    lv_obj_set_style_text_font(l, &ui_font_share_tech_mono_12, 0);
-    lv_obj_set_style_text_color(l, gray, 0);
-    lv_obj_set_pos(l, 6, y); y += 20;
+    /* ── 11. Heap monitor + TCP log-relay task ───────────────────────────── */
+    diag_log_start_heap_monitor();
 
-    d = lv_obj_create(scr);
-    lv_obj_set_size(d, 320, 1); lv_obj_set_pos(d, 0, y); y += 6;
-    lv_obj_set_style_bg_color(d, lv_color_hex(0x1A2A3A), 0);
-    lv_obj_set_style_border_width(d, 0, 0); lv_obj_set_style_radius(d, 0, 0);
+    ESP_LOGI(TAG, "Node-Aether boot complete. Dashboard running on Core 1.");
 
-    /* ── Silkscreen ─────────────────────────────────────────── */
-    l = lv_label_create(scr);
-    lv_label_set_text(l, "Silkscreen 16  RELAY: ON  TEMP: 42C");
-    lv_obj_set_style_text_font(l, &ui_font_silkscreen_16, 0);
-    lv_obj_set_style_text_color(l, cyan, 0);
-    lv_obj_set_pos(l, 6, y); y += 22;
-
-    l = lv_label_create(scr);
-    lv_label_set_text(l, "Silkscreen 12  UPTIME: 14d 06h 23m");
-    lv_obj_set_style_text_font(l, &ui_font_silkscreen_12, 0);
-    lv_obj_set_style_text_color(l, mint, 0);
-    lv_obj_set_pos(l, 6, y); y += 20;
-
-    d = lv_obj_create(scr);
-    lv_obj_set_size(d, 320, 1); lv_obj_set_pos(d, 0, y); y += 6;
-    lv_obj_set_style_bg_color(d, lv_color_hex(0x1A2A3A), 0);
-    lv_obj_set_style_border_width(d, 0, 0); lv_obj_set_style_radius(d, 0, 0);
-
-    /* ── VT323 ──────────────────────────────────────────────── */
-    l = lv_label_create(scr);
-    lv_label_set_text(l, "VT323 20  SOCKET CONTROLLER v2.1");
-    lv_obj_set_style_text_font(l, &ui_font_vt323_20, 0);
-    lv_obj_set_style_text_color(l, mint, 0);
-    lv_obj_set_pos(l, 6, y); y += 24;
-
-    l = lv_label_create(scr);
-    lv_label_set_text(l, "VT323 16  WireGuard: CONNECTED");
-    lv_obj_set_style_text_font(l, &ui_font_vt323_16, 0);
-    lv_obj_set_style_text_color(l, white, 0);
-    lv_obj_set_pos(l, 6, y);
-
-    display_manager_unlock();
-  }
-
-  ESP_LOGI(TAG, "Font showcase drawn. Idling forever.");
-  while (1) {
-    vTaskDelay(pdMS_TO_TICKS(1000));
-  }
+    /* app_main task can be deleted — all work is in LVGL port task + timers */
+    vTaskDelete(NULL);
 }

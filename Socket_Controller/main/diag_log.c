@@ -243,3 +243,46 @@ char* diag_log_get_crash_buffer_alloc(void) {
     dump[pos] = '\0';
     return dump;
 }
+
+void diag_log_get_last_n_lines(char out[][80], int n, int line_len) {
+    /* Unwind the circular ring buffer into a flat temp string */
+    char tmp[CRASH_BUF_SIZE + 1];
+    int tlen = 0;
+    for (int i = 0; i < CRASH_BUF_SIZE; i++) {
+        char c = s_rtc_buf[(s_rtc_head + i) % CRASH_BUF_SIZE];
+        if (c != '\0') tmp[tlen++] = c;
+    }
+    tmp[tlen] = '\0';
+
+    /* Walk backwards collecting up to n newline-terminated lines */
+    char lines[10][80];
+    int found = 0;
+    int end = tlen;
+
+    for (int i = tlen - 1; i >= 0 && found < n; i--) {
+        if (tmp[i] == '\n' && end > i + 1) {
+            int seg_len = end - i - 1;
+            if (seg_len >= line_len) seg_len = line_len - 1;
+            strncpy(lines[found], tmp + i + 1, seg_len);
+            lines[found][seg_len] = '\0';
+            found++;
+            end = i;
+        }
+    }
+    /* Grab any remaining text at the very start */
+    if (found < n && end > 0) {
+        int seg_len = end;
+        if (seg_len >= line_len) seg_len = line_len - 1;
+        strncpy(lines[found], tmp, seg_len);
+        lines[found][seg_len] = '\0';
+        found++;
+    }
+
+    /* Lines were collected newest-first; reverse into out[] (oldest-first) */
+    int blank_rows = n - found;
+    for (int i = 0; i < blank_rows; i++) out[i][0] = '\0';
+    for (int i = 0; i < found; i++) {
+        strncpy(out[blank_rows + i], lines[found - 1 - i], line_len - 1);
+        out[blank_rows + i][line_len - 1] = '\0';
+    }
+}
